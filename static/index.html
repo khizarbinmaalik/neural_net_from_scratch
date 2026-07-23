@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MNIST Digit Classifier</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 { font-size: 28px; margin-bottom: 6px; color: #a78bfa; }
+    p.sub { color: #888; margin-bottom: 32px; font-size: 14px; }
+
+    .container {
+      display: flex;
+      gap: 40px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .left { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+
+    canvas {
+      background: #000;
+      border: 2px solid #a78bfa;
+      border-radius: 12px;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    .btn-row { display: flex; gap: 10px; }
+
+    button {
+      padding: 10px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      cursor: pointer;
+      font-weight: 500;
+      transition: opacity 0.2s;
+    }
+    button:hover { opacity: 0.85; }
+
+    #predictBtn { background: #a78bfa; color: #000; }
+    #clearBtn   { background: #333;    color: #fff; }
+
+    /* Result panel */
+    .right {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      min-width: 260px;
+    }
+
+    .result-box {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 12px;
+      padding: 24px;
+      text-align: center;
+    }
+
+    #digit-display {
+      font-size: 80px;
+      font-weight: 700;
+      color: #a78bfa;
+      line-height: 1;
+    }
+
+    #confidence-display {
+      font-size: 16px;
+      color: #aaa;
+      margin-top: 8px;
+    }
+
+    .bar-container { display: flex; flex-direction: column; gap: 6px; }
+
+    .bar-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+
+    .bar-label { min-width: 16px; color: #aaa; }
+
+    .bar-bg {
+      flex: 1;
+      background: #2a2a2a;
+      border-radius: 4px;
+      height: 12px;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: #a78bfa;
+      border-radius: 4px;
+      transition: width 0.4s ease;
+    }
+
+    .bar-val { min-width: 44px; text-align: right; color: #888; font-size: 12px; }
+
+    #status {
+      font-size: 13px;
+      color: #888;
+      text-align: center;
+      margin-top: 4px;
+    }
+
+    .loading { color: #a78bfa; }
+    .error   { color: #f87171; }
+  </style>
+</head>
+<body>
+
+<h1>🧠 MNIST Digit Classifier</h1>
+<p class="sub">Neural network built from scratch with NumPy · 97% test accuracy</p>
+
+<div class="container">
+
+  <!-- LEFT: Drawing canvas -->
+  <div class="left">
+    <canvas id="canvas" width="280" height="280"></canvas>
+    <div class="btn-row">
+      <button id="predictBtn" onclick="sendPrediction()">Predict</button>
+      <button id="clearBtn"   onclick="clearCanvas()">Clear</button>
+    </div>
+    <p id="status">Draw a digit above, then click Predict</p>
+  </div>
+
+  <!-- RIGHT: Results -->
+  <div class="right">
+
+    <div class="result-box">
+      <div id="digit-display">?</div>
+      <div id="confidence-display">Draw a digit to start</div>
+    </div>
+
+    <div class="result-box">
+      <p style="font-size:13px;color:#888;margin-bottom:12px;">Confidence per digit</p>
+      <div class="bar-container" id="bars">
+        <!-- Bars injected by JS -->
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // ── CANVAS SETUP ────────────────────────────────────────────────
+  const canvas  = document.getElementById('canvas');
+  const ctx     = canvas.getContext('2d');
+  let drawing   = false;
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth   = 22;
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+
+  // Initialize probability bars
+  const barsDiv = document.getElementById('bars');
+  for (let i = 0; i < 10; i++) {
+    barsDiv.innerHTML += `
+      <div class="bar-row">
+        <span class="bar-label">${i}</span>
+        <div class="bar-bg">
+          <div class="bar-fill" id="bar${i}" style="width:0%"></div>
+        </div>
+        <span class="bar-val" id="val${i}">0.00%</span>
+      </div>`;
+  }
+
+  // Mouse events
+  canvas.addEventListener('mousedown',  e => { drawing = true; ctx.beginPath(); moveTo(e); });
+  canvas.addEventListener('mousemove',  e => { if (drawing) draw(e); });
+  canvas.addEventListener('mouseup',    () => drawing = false);
+  canvas.addEventListener('mouseleave', () => drawing = false);
+
+  // Touch events (mobile support)
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault(); drawing = true; ctx.beginPath(); moveTo(e.touches[0]);
+  });
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault(); if (drawing) draw(e.touches[0]);
+  });
+  canvas.addEventListener('touchend', () => drawing = false);
+
+  function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  function moveTo(e) {
+    const p = getPos(e);
+    ctx.moveTo(p.x, p.y);
+  }
+
+  function draw(e) {
+    const p = getPos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+
+  function clearCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    document.getElementById('digit-display').textContent    = '?';
+    document.getElementById('confidence-display').textContent = 'Draw a digit to start';
+    document.getElementById('status').textContent = 'Draw a digit above, then click Predict';
+    document.getElementById('status').className   = '';
+    for (let i = 0; i < 10; i++) {
+      document.getElementById('bar' + i).style.width = '0%';
+      document.getElementById('val' + i).textContent = '0.00%';
+    }
+  }
+
+  // ── SEND TO BACKEND ─────────────────────────────────────────────
+  async function sendPrediction() {
+    const status = document.getElementById('status');
+    status.textContent = 'Predicting...';
+    status.className   = 'loading';
+
+    // Convert canvas to PNG blob
+    canvas.toBlob(async (blob) => {
+      const formData = new FormData();
+      formData.append('file', blob, 'digit.png');
+
+      try {
+        const response = await fetch('/predict', {
+          method: 'POST',
+          body:   formData
+        });
+
+        if (!response.ok) throw new Error('Server error');
+
+        const result = await response.json();
+
+        // Update digit display
+        document.getElementById('digit-display').textContent =
+          result.digit;
+        document.getElementById('confidence-display').textContent =
+          `${result.confidence.toFixed(1)}% confident`;
+
+        // Update bars
+        for (let i = 0; i < 10; i++) {
+          const pct = result.all_probs[String(i)] || 0;
+          document.getElementById('bar' + i).style.width  = pct + '%';
+          document.getElementById('val' + i).textContent  = pct.toFixed(2) + '%';
+        }
+
+        status.textContent = 'Done!';
+        status.className   = '';
+
+      } catch (err) {
+        status.textContent = 'Error: ' + err.message;
+        status.className   = 'error';
+      }
+    }, 'image/png');
+  }
+</script>
+
+</body>
+</html>
